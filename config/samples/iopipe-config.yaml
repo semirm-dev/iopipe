@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: iopipe
+  namespace: semirmahovkic
+  labels:
+    iopipesync: 'yes'
+data:
+  steps: |
+    - id: 1
+      inputDir: tmp/input
+      outputDir: tmp/output
+      io:
+        dir1: 01
+        dir2: 01
+    - id: 1
+      inputDir: tmp/input
+      outputDir: tmp/output
+      io:
+        dir1: 02/input-1.txt
+
