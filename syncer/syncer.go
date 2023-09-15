@@ -22,9 +22,10 @@ type ConfWriter interface {
 	Write(ctx context.Context, outputConfigs []OutputConfig) error
 }
 
+// Step represents a group of configs to be executed.
 type Step struct {
 	ID        string            `yaml:"id"`
-	Configs   map[string]string `yaml:"configs"`
+	Configs   map[string]string `yaml:"io"`
 	InputDir  string            `yaml:"inputDir,omitempty"`
 	OutputDir string            `yaml:"outputDir,omitempty"`
 }
