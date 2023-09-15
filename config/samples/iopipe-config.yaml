@@ -10,12 +10,12 @@ data:
     - id: 1
       inputDir: tmp/input
       outputDir: tmp/output
-      io:
+      configs:
         dir1: 01
         dir2: 01
     - id: 1
       inputDir: tmp/input
       outputDir: tmp/output
-      io:
+      configs:
         dir1: 02/input-1.txt
 

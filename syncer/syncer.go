@@ -4,7 +4,6 @@ import (
 	"context"
 	"github.com/sirupsen/logrus"
 	"path/filepath"
-	"sync"
 )
 
 const (
@@ -25,7 +24,7 @@ type ConfWriter interface {
 // Step represents a group of configs to be executed.
 type Step struct {
 	ID        string            `yaml:"id"`
-	Configs   map[string]string `yaml:"io"`
+	Configs   map[string]string `yaml:"configs"`
 	InputDir  string            `yaml:"inputDir,omitempty"`
 	OutputDir string            `yaml:"outputDir,omitempty"`
 }
@@ -73,109 +72,114 @@ func Sync(ctx context.Context, steps []Step) error {
 // syncConfig will read configs from a reader and write new configs using a writer.
 // It will usually read config files from an input directory, zip it and store it to an output directory.
 func syncConfig(ctx context.Context, step Step) {
-	readRes := make(chan readResult)
-	bulkRes := make(chan readResult)
+	for parent, path := range step.Configs {
+		inputPath := filepath.Join(step.InputDir, parent, path)
 
-	go collectReadRes(ctx, readRes, bulkRes)
+		confReader := NewFileConfReader(inputPath)
+		confWriter := NewFileConfWriter(step.ID, step.OutputDir)
 
-	// we can add other filters in the pipeline before sending data to writer for a final writing
-	writeRes := make(chan writeResult)
-	confWriter := NewFileConfWriter(step.ID, step.OutputDir)
-	go writeConfigs(ctx, confWriter, bulkRes, writeRes)
+		readRes := readConfigs(ctx, confReader)
+		bulkRes := collectAsBulk(ctx, readRes)
+		// optionally add other filters in the pipeline
+		writeRes := writeConfigs(ctx, confWriter, bulkRes)
 
-	wg := &sync.WaitGroup{}
-	for comp, path := range step.Configs {
-		wg.Add(1)
-		inputPath := filepath.Join(step.InputDir, comp, path)
-
-		go func(wg *sync.WaitGroup, inputPath string) {
-			defer wg.Done()
-			confReader := NewFileConfReader(inputPath)
-			readConfigs(ctx, confReader, readRes)
-		}(wg, inputPath)
+		handleWriteResult(ctx, writeRes)
 	}
-	wg.Wait()
-	close(readRes)
-	handleWriteResult(writeRes)
 }
 
 // readConfigs will read input configs using the given confReader.
-// Read configs are passed over to readRes channel for further processing by a writer.
-func readConfigs(ctx context.Context, confReader ConfReader, readRes chan readResult) {
-	select {
-	case <-ctx.Done():
-		return
-	default:
-		configs, err := confReader.Read(ctx)
-		if err != nil {
-			readRes <- readResult{err: err}
-			return
-		}
+// Read configs are returned through readRes channel for further processing.
+func readConfigs(ctx context.Context, confReader ConfReader) <-chan readResult {
+	readRes := make(chan readResult)
 
-		readRes <- readResult{outputConfigs: configs}
-	}
-}
+	go func() {
+		defer close(readRes)
 
-// collectReadRes will collect all read configs from readRes and send them as a bulk to bulkRes.
-func collectReadRes(ctx context.Context, readRes chan readResult, bulkRes chan readResult) {
-	var outputs []OutputConfig
-
-	defer func() {
-		bulkRes <- readResult{outputConfigs: outputs}
-		close(bulkRes)
-	}()
-
-	for {
 		select {
 		case <-ctx.Done():
 			return
-		case r, ok := <-readRes:
-			if !ok {
+		default:
+			configs, err := confReader.Read(ctx)
+			if err != nil {
+				readRes <- readResult{err: err}
 				return
 			}
-			outputs = append(outputs, r.outputConfigs...)
+
+			readRes <- readResult{outputConfigs: configs}
 		}
-	}
+	}()
+
+	return readRes
+}
+
+// collectAsBulk will collect all read configs from readRes and send them as a bulk through bulkRes channel.
+func collectAsBulk(ctx context.Context, readRes <-chan readResult) <-chan readResult {
+	bulkResult := make(chan readResult)
+
+	go func() {
+		var outputs []OutputConfig
+
+		defer func() {
+			bulkResult <- readResult{outputConfigs: outputs}
+			close(bulkResult)
+		}()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case r, ok := <-readRes:
+				if !ok {
+					return
+				}
+				outputs = append(outputs, r.outputConfigs...)
+			}
+		}
+	}()
+
+	return bulkResult
 }
 
 // writeConfigs will write output configs using the given confWriter.
 // Input configs for output are received from readRes channel.
-// Results from written configs are passed over to writeRes channel.
-func writeConfigs(
-	ctx context.Context,
-	confWriter ConfWriter,
-	readRes chan readResult,
-	writeRes chan writeResult,
-) {
-	defer func() {
-		logrus.Infof("writer finished")
-		close(writeRes)
+// Results from written configs are returned through writeRes channel.
+func writeConfigs(ctx context.Context, confWriter ConfWriter, readRes <-chan readResult) <-chan writeResult {
+	writeRes := make(chan writeResult)
+
+	go func() {
+		defer close(writeRes)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case r, ok := <-readRes:
+				if !ok {
+					return
+				}
+
+				if r.err != nil {
+					writeRes <- writeResult{err: r.err}
+					break
+				}
+
+				if err := confWriter.Write(ctx, r.outputConfigs); err != nil {
+					writeRes <- writeResult{err: err}
+				}
+
+				writeRes <- writeResult{}
+			}
+		}
 	}()
 
+	return writeRes
+}
+
+func handleWriteResult(ctx context.Context, writeRes <-chan writeResult) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case r, ok := <-readRes:
-			if !ok {
-				return
-			}
-
-			if r.err != nil {
-				writeRes <- writeResult{err: r.err}
-				continue
-			}
-
-			if err := confWriter.Write(ctx, r.outputConfigs); err != nil {
-				writeRes <- writeResult{err: err}
-			}
-		}
-	}
-}
-
-func handleWriteResult(writeRes chan writeResult) {
-	for {
-		select {
 		case r, ok := <-writeRes:
 			if !ok {
 				return

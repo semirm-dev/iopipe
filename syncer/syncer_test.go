@@ -8,9 +8,6 @@ import (
 )
 
 func TestSync(t *testing.T) {
-	syncCtx, syncCancel := context.WithCancel(context.Background())
-	defer syncCancel()
-
 	steps := []syncer.Step{
 		{
 			ID:        "s1",
@@ -31,6 +28,6 @@ func TestSync(t *testing.T) {
 		},
 	}
 
-	err := syncer.Sync(syncCtx, steps)
+	err := syncer.Sync(context.Background(), steps)
 	assert.NoError(t, err)
 }
