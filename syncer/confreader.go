@@ -6,7 +6,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"os"
 	"path"
-	"sync"
 )
 
 type FileConfReader struct {
@@ -89,17 +88,12 @@ func readSingleFile(info os.FileInfo, path string) ([]OutputConfig, error) {
 }
 
 func readFiles(ctx context.Context, dirPath string, files []string, readResponse chan fileRead) {
-	wg := sync.WaitGroup{}
-	wg.Add(len(files))
-
 	for _, file := range files {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			go func(ctx context.Context, filename string, wg *sync.WaitGroup) {
-				defer wg.Done()
-
+			go func(ctx context.Context, filename string) {
 				select {
 				case <-ctx.Done():
 					return
@@ -115,7 +109,7 @@ func readFiles(ctx context.Context, dirPath string, files []string, readResponse
 						content: content,
 					}
 				}
-			}(ctx, file, &wg)
+			}(ctx, file)
 		}
 	}
 }
