@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/sirupsen/logrus"
 	"path/filepath"
+	"sync"
 )
 
 const (
@@ -70,21 +71,33 @@ func Sync(ctx context.Context, steps []Step) error {
 }
 
 // syncConfig will read configs from a reader and write new configs using a writer.
-// It will usually read config files from an input directory, zip it and store it to an output directory.
+// It will read config files from an input directory, zip it and store it to an output directory.
+// Each config is processed in separate goroutine.
+// Each operation (read, bulk, write) per config is processed in separate goroutine.
 func syncConfig(ctx context.Context, step Step) {
+	wg := sync.WaitGroup{}
+
 	for parent, path := range step.Configs {
-		inputPath := filepath.Join(step.InputDir, parent, path)
+		wg.Add(1)
 
-		confReader := NewFileConfReader(inputPath)
-		confWriter := NewFileConfWriter(step.ID, step.OutputDir)
+		go func(wg *sync.WaitGroup, parent, path string) {
+			defer wg.Done()
 
-		readRes := readConfigs(ctx, confReader)
-		bulkRes := collectAsBulk(ctx, readRes)
-		// optionally add other filters in the pipeline
-		writeRes := writeConfigs(ctx, confWriter, bulkRes)
+			inputPath := filepath.Join(step.InputDir, parent, path)
 
-		handleWriteResult(ctx, writeRes)
+			confReader := NewFileConfReader(inputPath)
+			confWriter := NewFileConfWriter(step.ID, step.OutputDir)
+
+			readRes := readConfigs(ctx, confReader)
+			bulkRes := collectAsBulk(ctx, readRes)
+			// optionally add other filters in the pipeline
+			writeRes := writeConfigs(ctx, confWriter, bulkRes)
+
+			handleWriteResult(ctx, writeRes)
+		}(&wg, parent, path)
 	}
+
+	wg.Wait()
 }
 
 // readConfigs will read input configs using the given confReader.
